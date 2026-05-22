@@ -51,6 +51,8 @@ Git 仓库——你按自己的节奏在本地提交，再整体推送/拉取快
 - =unzip=
 
 如果要通过浏览器辅助认证，还需要安装 =geckodriver= (https://github.com/mozilla/geckodriver)。
+每次认证都会在一个空闲本地端口启动 geckodriver，因此即使有旧的驱动进程
+仍占用默认的 =4444= 端口，也不应阻塞重新认证。
 
 * 开发
 

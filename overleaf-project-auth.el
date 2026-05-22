@@ -44,8 +44,8 @@
           (while (and (not port)
                       (process-live-p process)
                       (< (float-time) deadline))
-            (goto-char (point-min))
-            (when (re-search-forward
+            (goto-char (point-max))
+            (when (re-search-backward
                    "Listening on .*:\\([0-9]+\\)\\(?:[[:space:]]*$\\|/\\)"
                    nil t)
               (setq port (string-to-number (match-string 1))))
@@ -54,6 +54,36 @@
     (or port
         (and (integerp fallback) fallback)
         (error "Could not determine geckodriver listening port"))))
+
+(defun overleaf-project--webdriver-service ()
+  "Return a Firefox webdriver service using an available local port."
+  (make-instance 'webdriver-service-firefox
+                 :port (webdriver--get-free-port)
+                 :buffer (generate-new-buffer
+                          " *overleaf-project-geckodriver*")))
+
+(defun overleaf-project--webdriver-session ()
+  "Return a webdriver session for Overleaf authentication."
+  (make-instance 'webdriver-session
+                 :service (overleaf-project--webdriver-service)))
+
+(defun overleaf-project--webdriver-session-stop (session)
+  "Stop SESSION and its service without masking an earlier error."
+  (let ((service (oref session service)))
+    (condition-case err
+        (when (oref session id)
+          (webdriver-session-stop session))
+      (error
+       (overleaf-project--debug
+        "Ignoring webdriver session cleanup error: %s"
+        (error-message-string err))))
+    (when service
+      (condition-case err
+          (webdriver-service-stop service)
+        (error
+         (overleaf-project--debug
+          "Ignoring webdriver service cleanup error: %s"
+          (error-message-string err)))))))
 
 (cl-defmacro overleaf-project--webdriver-wait-until-appears
     ((session xpath &optional (element-sym '_unused) (delay .1)) &rest body)
@@ -157,12 +187,13 @@ If URL is nil, use `overleaf-project-url'.  Return the saved full cookie alist."
      (user-error
       "`overleaf-project-save-cookies' needs to be configured"))
    (setq overleaf-project-url (or url (overleaf-project--url)))
-   (let ((session (make-instance 'webdriver-session)))
+   (let ((session (overleaf-project--webdriver-session)))
      (unwind-protect
          ;; Re-authentication should not depend on previously saved cookies.
          ;; Using only the freshly captured cookie avoids failures from stale
          ;; or undecryptable cookie stores.
          (let ((full-cookies nil))
+           (webdriver-service-start (oref session service))
            (webdriver-session-start session)
            (webdriver-goto-url session (concat (overleaf-project--url) "/login"))
            (overleaf-project--message "Log in using the browser window...")
@@ -195,7 +226,7 @@ If URL is nil, use `overleaf-project-url'.  Return the saved full cookie alist."
               full-cookies
               "Saved Overleaf cookies for %s")
              full-cookies))
-       (webdriver-session-stop session)))))
+       (overleaf-project--webdriver-session-stop session)))))
 
 ;;;###autoload
 (defun overleaf-project-authenticate (&optional url)

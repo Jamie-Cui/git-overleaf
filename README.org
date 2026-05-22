@@ -57,6 +57,9 @@ Project push/pull expects these executables to be available:
 - =unzip=
 
 Optional authentication through the browser also needs =geckodriver= (https://github.com/mozilla/geckodriver).
+Each authentication attempt starts geckodriver on a free local port, so a
+stale driver already listening on the default port =4444= should not block
+re-authentication.
 
 * Development
 
