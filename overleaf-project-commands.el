@@ -15,6 +15,8 @@
 (require 'overleaf-project-http)
 (require 'overleaf-project-sync)
 
+(declare-function overleaf-project--force-stop "overleaf-project-core")
+
 ;;;; Command helpers
 
 (defun overleaf-project--repo-async-key (repo)
@@ -559,6 +561,17 @@ authentication."
          (overleaf-project--project-page-url
           (plist-get (overleaf-project--read-project) :id)))))))
 
+;;;###autoload
+(defun overleaf-project-force-stop ()
+  "Stop all running background Overleaf operations.
+
+This cancels tracked Emacs threads, interrupts external processes they
+started, clears async operation locks, and discards pending foreground
+callbacks.  The cancellation is best effort: external tools that have
+already changed local or remote state are not rolled back."
+  (interactive)
+  (overleaf-project--force-stop))
+
 ;;;; Command map
 
 ;;;###autoload
@@ -566,6 +579,7 @@ authentication."
   "a" #'overleaf-project-authenticate
   "b" #'overleaf-project-browse-remote
   "c" #'overleaf-project-clone
+  "k" #'overleaf-project-force-stop
   "l" #'overleaf-project-pull
   "p" #'overleaf-project-push
   "s" #'overleaf-project-push)

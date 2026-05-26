@@ -181,6 +181,12 @@ remote refreshes are waiting on Overleaf or external tools.  Set
 ~overleaf-project-async-commands~ to ~nil~ if you need the older fully
 synchronous command behavior.
 
+Run ~M-x overleaf-project-force-stop~ to cancel all currently tracked
+background Overleaf operations.  It interrupts their external processes
+where possible, clears async locks, and drops pending foreground
+callbacks.  Cancellation is best effort: work already completed locally
+or remotely is not rolled back.
+
 Both commands still have to run from a normal branch rather than a
 detached ~HEAD~.
 
@@ -316,6 +322,7 @@ The main interactive commands are:
 - ~overleaf-project-overwrite-remote~
 - ~overleaf-project-pull~
 - ~overleaf-project-browse-remote~
+- ~overleaf-project-force-stop~
 - ~overleaf-project-log~
 - ~overleaf-project-log-clear~
 
@@ -330,6 +337,7 @@ The default bindings inside that map are:
 - =a= -> ~overleaf-project-authenticate~
 - =b= -> ~overleaf-project-browse-remote~
 - =c= -> ~overleaf-project-clone~
+- =k= -> ~overleaf-project-force-stop~
 - =l= -> ~overleaf-project-pull~
 - =p= -> ~overleaf-project-push~
 - =s= -> ~overleaf-project-push~ (compatibility shortcut)

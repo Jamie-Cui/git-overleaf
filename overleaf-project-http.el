@@ -15,6 +15,8 @@
 (require 'websocket)
 (require 'overleaf-project-core)
 
+(declare-function overleaf-project--async-register-process "overleaf-project-core")
+(declare-function overleaf-project--async-unregister-process "overleaf-project-core")
 (declare-function mm-url-decode-entities-string "mm-url")
 
 ;;;; HTTP helpers
@@ -404,6 +406,7 @@ The response body is discarded."
                  :on-close
                  (lambda (_socket)
                    (setq done t))))
+          (overleaf-project--async-register-process (websocket-conn ws))
           (let ((deadline (+ (float-time) overleaf-project-socket-timeout)))
             (while (and (not done) (< (float-time) deadline))
               (accept-process-output nil 0.1))
@@ -414,6 +417,7 @@ The response body is discarded."
             (or result
                 (user-error "Could not fetch project tree for %s" project-id))))
       (when ws
+        (overleaf-project--async-unregister-process (websocket-conn ws))
         (ignore-errors (websocket-close ws))))))
 
 (defun overleaf-project--socketio-event-data (text)

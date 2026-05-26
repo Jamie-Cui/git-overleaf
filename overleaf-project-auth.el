@@ -17,6 +17,9 @@
 (require 'overleaf-project-core)
 (require 'overleaf-project-http)
 
+(declare-function overleaf-project--async-register-process "overleaf-project-core")
+(declare-function overleaf-project--async-unregister-process "overleaf-project-core")
+
 ;;;; Authentication
 
 (defmacro overleaf-project--with-webdriver (&rest body)
@@ -203,6 +206,8 @@ If URL is nil, use `overleaf-project-url'.  Return the saved full cookie alist."
          (overleaf-project--with-webdriver-direct-connection
            (let ((full-cookies nil))
              (webdriver-service-start (oref session service))
+             (overleaf-project--async-register-process
+              (oref (oref session service) process))
              (webdriver-session-start session)
              (webdriver-goto-url session (concat (overleaf-project--url) "/login"))
              (overleaf-project--message "Log in using the browser window...")
@@ -236,6 +241,9 @@ If URL is nil, use `overleaf-project-url'.  Return the saved full cookie alist."
                 "Saved Overleaf cookies for %s")
                full-cookies)))
        (overleaf-project--with-webdriver-direct-connection
+         (when (oref (oref session service) process)
+           (overleaf-project--async-unregister-process
+            (oref (oref session service) process)))
          (overleaf-project--webdriver-session-stop session))))))
 
 ;;;###autoload

@@ -214,6 +214,7 @@ this variable directly only when you want custom persistence logic.")
 
 (cl-defstruct overleaf-project--async-completion
   "Completed background Overleaf operation."
+  task-id
   name
   key
   status
@@ -227,11 +228,32 @@ this variable directly only when you want custom persistence logic.")
 
 ;;;; Async helpers
 
+(cl-defstruct overleaf-project--async-task
+  "Running background Overleaf operation."
+  id
+  name
+  key
+  thread
+  processes
+  canceled)
+
 (defvar overleaf-project--async-locks (make-hash-table :test #'equal)
   "Background operation locks keyed by repository or task identity.")
 
+(defvar overleaf-project--async-tasks (make-hash-table :test #'eql)
+  "Running background operations keyed by internal task id.")
+
+(defvar overleaf-project--async-canceled-task-ids (make-hash-table :test #'eql)
+  "Ids of canceled background operations that may still unwind later.")
+
+(defvar overleaf-project--async-next-task-id 0
+  "Last internal id assigned to a background operation.")
+
 (defvar overleaf-project--async-completions nil
   "Completed background operations waiting for foreground callbacks.")
+
+(defvar overleaf-project--async-current-task-id nil
+  "Internal id of the background operation running in this thread.")
 
 (defvar overleaf-project--async-mutex
   (and (fboundp 'make-mutex)
@@ -262,6 +284,11 @@ this variable directly only when you want custom persistence logic.")
        (not noninteractive)
        (overleaf-project--async-supported-p)))
 
+(defun overleaf-project--async-next-task-id ()
+  "Return the next internal async task id."
+  (setq overleaf-project--async-next-task-id
+        (1+ overleaf-project--async-next-task-id)))
+
 (defun overleaf-project--async-lock-empty-p ()
   "Return non-nil if there are no active async locks."
   (let ((empty t))
@@ -269,6 +296,91 @@ this variable directly only when you want custom persistence logic.")
                (setq empty nil))
              overleaf-project--async-locks)
     empty))
+
+(defun overleaf-project--async-task-empty-p ()
+  "Return non-nil if there are no tracked async tasks."
+  (let ((empty t))
+    (maphash (lambda (_key _value)
+               (setq empty nil))
+             overleaf-project--async-tasks)
+    empty))
+
+(defun overleaf-project--async-live-task-p (task)
+  "Return non-nil if TASK still has live work."
+  (or (and (overleaf-project--async-task-thread task)
+           (thread-live-p (overleaf-project--async-task-thread task)))
+      (cl-some (lambda (process)
+                 (and (processp process)
+                      (process-live-p process)))
+               (overleaf-project--async-task-processes task))))
+
+(defun overleaf-project--async-register-task (task)
+  "Register TASK as running background work."
+  (puthash (overleaf-project--async-task-id task)
+           task
+           overleaf-project--async-tasks))
+
+(defun overleaf-project--async-remove-task (task-id)
+  "Remove TASK-ID from running background work."
+  (remhash task-id overleaf-project--async-tasks))
+
+(defun overleaf-project--async-current-task ()
+  "Return the task currently running in this thread, or nil."
+  (and overleaf-project--async-current-task-id
+       (gethash overleaf-project--async-current-task-id
+                overleaf-project--async-tasks)))
+
+(defun overleaf-project--async-current-task-canceled-p ()
+  "Return non-nil if the current background task has been canceled."
+  (or (and overleaf-project--async-current-task-id
+           (gethash overleaf-project--async-current-task-id
+                    overleaf-project--async-canceled-task-ids))
+      (when-let* ((task (overleaf-project--async-current-task)))
+        (overleaf-project--async-task-canceled task))))
+
+(defun overleaf-project--async-register-process (process)
+  "Register PROCESS under the current background task."
+  (when-let* (((processp process))
+              (task (overleaf-project--async-current-task)))
+    (push process (overleaf-project--async-task-processes task)))
+  process)
+
+(defun overleaf-project--async-unregister-process (process)
+  "Unregister PROCESS from the current background task."
+  (when-let* (((processp process))
+              (task (overleaf-project--async-current-task)))
+    (setf (overleaf-project--async-task-processes task)
+          (delq process (overleaf-project--async-task-processes task)))))
+
+(defun overleaf-project--async-cancel-task (task)
+  "Cancel TASK and any external processes it started."
+  (setf (overleaf-project--async-task-canceled task) t)
+  (dolist (process (overleaf-project--async-task-processes task))
+    (when (and (processp process)
+               (process-live-p process))
+      (ignore-errors (interrupt-process process))
+      (when (process-live-p process)
+        (ignore-errors (kill-process process)))
+      (when (process-live-p process)
+        (ignore-errors (delete-process process)))))
+  (when-let* ((thread (overleaf-project--async-task-thread task)))
+    (when (and (thread-live-p thread)
+               (not (eq thread (current-thread))))
+      (ignore-errors
+        (thread-signal thread
+                       'quit
+                       (list (format "Canceled %s"
+                                     (overleaf-project--async-task-name task))))))))
+
+(defun overleaf-project--async-cancel-completion-p (completion)
+  "Return non-nil if COMPLETION belongs to a canceled task."
+  (when-let* ((task-id (overleaf-project--async-completion-task-id completion)))
+    (let ((task (gethash task-id overleaf-project--async-tasks))
+          (canceled (gethash task-id overleaf-project--async-canceled-task-ids)))
+      (prog1 (or canceled
+                 (and task (overleaf-project--async-task-canceled task)))
+        (overleaf-project--async-remove-task task-id)
+        (remhash task-id overleaf-project--async-canceled-task-ids)))))
 
 (defun overleaf-project--async-ensure-timer ()
   "Ensure the async completion drain timer is running."
@@ -280,7 +392,8 @@ this variable directly only when you want custom persistence logic.")
   "Stop the async completion timer when no background work remains."
   (when (and (timerp overleaf-project--async-timer)
              (null overleaf-project--async-completions)
-             (overleaf-project--async-lock-empty-p))
+             (overleaf-project--async-lock-empty-p)
+             (overleaf-project--async-task-empty-p))
     (cancel-timer overleaf-project--async-timer)
     (setq overleaf-project--async-timer nil)))
 
@@ -298,42 +411,68 @@ this variable directly only when you want custom persistence logic.")
 (defun overleaf-project--async-drain-completions ()
   "Run foreground callbacks for completed async operations."
   (dolist (completion (overleaf-project--async-pop-completions))
-    (let ((key (overleaf-project--async-completion-key completion)))
-      (when key
-        (remhash key overleaf-project--async-locks)))
-    (let ((default-directory
-           (or (overleaf-project--async-completion-default-directory completion)
-               default-directory))
-          (overleaf-project-url
-           (or (overleaf-project--async-completion-overleaf-project-url completion)
-               overleaf-project-url))
-          (overleaf-project-log-context
-           (or (overleaf-project--async-completion-log-context completion)
-               overleaf-project-log-context)))
-      (condition-case err
-          (pcase (overleaf-project--async-completion-status completion)
-            ('success
-             (if-let ((callback
-                       (overleaf-project--async-completion-on-success completion)))
-                 (funcall callback
-                          (overleaf-project--async-completion-value completion))
-               (overleaf-project--message "Finished %s"
-					  (overleaf-project--async-completion-name
-					   completion))))
-            ('error
-             (let ((message
-                    (overleaf-project--async-completion-error completion)))
-               (if-let ((callback
-                         (overleaf-project--async-completion-on-error completion)))
-                   (funcall callback message)
-                 (overleaf-project--warn "%s failed: %s"
-					 (overleaf-project--async-completion-name completion)
-					 message)))))
-        (error
-         (overleaf-project--warn "%s callback failed: %s"
-				 (overleaf-project--async-completion-name completion)
-				 (error-message-string err))))))
+    (unless (overleaf-project--async-cancel-completion-p completion)
+      (let ((key (overleaf-project--async-completion-key completion)))
+        (when key
+          (remhash key overleaf-project--async-locks)))
+      (let ((default-directory
+             (or (overleaf-project--async-completion-default-directory completion)
+                 default-directory))
+            (overleaf-project-url
+             (or (overleaf-project--async-completion-overleaf-project-url completion)
+                 overleaf-project-url))
+            (overleaf-project-log-context
+             (or (overleaf-project--async-completion-log-context completion)
+                 overleaf-project-log-context)))
+        (condition-case err
+            (pcase (overleaf-project--async-completion-status completion)
+              ('success
+               (if-let* ((callback
+                          (overleaf-project--async-completion-on-success completion)))
+                   (funcall callback
+                            (overleaf-project--async-completion-value completion))
+                 (overleaf-project--message "Finished %s"
+					    (overleaf-project--async-completion-name
+					     completion))))
+              ('error
+               (let ((message
+                      (overleaf-project--async-completion-error completion)))
+                 (if-let* ((callback
+                            (overleaf-project--async-completion-on-error completion)))
+                     (funcall callback message)
+                   (overleaf-project--warn "%s failed: %s"
+					   (overleaf-project--async-completion-name completion)
+					   message)))))
+          (error
+           (overleaf-project--warn "%s callback failed: %s"
+				   (overleaf-project--async-completion-name completion)
+				   (error-message-string err)))))))
   (overleaf-project--async-stop-timer-if-idle))
+
+(defun overleaf-project--force-stop ()
+  "Stop all running background Overleaf operations."
+  (let ((tasks nil))
+    (maphash (lambda (_id task)
+               (push task tasks))
+             overleaf-project--async-tasks)
+    (unless tasks
+      (user-error "No Overleaf background operation is running"))
+    (dolist (task tasks)
+      (let ((task-id (overleaf-project--async-task-id task)))
+        (puthash task-id t overleaf-project--async-canceled-task-ids)
+        (overleaf-project--async-cancel-task task)
+        (unless (overleaf-project--async-live-task-p task)
+          (remhash task-id overleaf-project--async-canceled-task-ids))))
+    (clrhash overleaf-project--async-locks)
+    (clrhash overleaf-project--async-tasks)
+    (setq overleaf-project--async-completions nil)
+    (when (timerp overleaf-project--async-timer)
+      (cancel-timer overleaf-project--async-timer)
+      (setq overleaf-project--async-timer nil))
+    (overleaf-project--message
+     "Stopped %d Overleaf background operation%s"
+     (length tasks)
+     (if (= (length tasks) 1) "" "s"))))
 
 (cl-defun overleaf-project--async-start
     (name function &key key on-success on-error quiet)
@@ -358,46 +497,65 @@ ON-ERROR receives an error message string in the foreground."
                   (gethash key overleaf-project--async-locks)))
     (when key
       (puthash key name overleaf-project--async-locks))
-    (let ((captured-default-directory default-directory)
-          (captured-overleaf-project-url overleaf-project-url)
-          (captured-current-cookies overleaf-project--current-cookies)
-          (captured-log-context (overleaf-project-log-current-context))
-          (captured-process-environment process-environment))
+    (let* ((task-id (overleaf-project--async-next-task-id))
+           (task (make-overleaf-project--async-task
+                  :id task-id
+                  :name name
+                  :key key))
+           (captured-default-directory default-directory)
+           (captured-overleaf-project-url overleaf-project-url)
+           (captured-current-cookies overleaf-project--current-cookies)
+           (captured-log-context (overleaf-project-log-current-context))
+           (captured-process-environment process-environment))
       (overleaf-project--async-ensure-timer)
       (unless quiet
         (overleaf-project--message "Started %s in background" name))
-      (make-thread
-       (lambda ()
-         (let ((default-directory captured-default-directory)
-               (overleaf-project-url captured-overleaf-project-url)
-               (overleaf-project--current-cookies captured-current-cookies)
-               (overleaf-project-log-context captured-log-context)
-               (process-environment captured-process-environment))
-           (condition-case err
-               (overleaf-project--async-push-completion
-                (make-overleaf-project--async-completion
-                 :name name
-                 :key key
-                 :status 'success
-                 :value (funcall function)
-                 :on-success on-success
-                 :on-error on-error
-                 :default-directory captured-default-directory
-                 :overleaf-project-url captured-overleaf-project-url
-                 :log-context captured-log-context))
-             (error
-              (overleaf-project--async-push-completion
-               (make-overleaf-project--async-completion
-                :name name
-                :key key
-                :status 'error
-                :error (error-message-string err)
-                :on-success on-success
-                :on-error on-error
-                :default-directory captured-default-directory
-                :overleaf-project-url captured-overleaf-project-url
-                :log-context captured-log-context))))))
-       name))))
+      (overleaf-project--async-register-task task)
+      (setf (overleaf-project--async-task-thread task)
+            (make-thread
+             (lambda ()
+               (let ((default-directory captured-default-directory)
+                     (overleaf-project-url captured-overleaf-project-url)
+                     (overleaf-project--current-cookies captured-current-cookies)
+                     (overleaf-project-log-context captured-log-context)
+                     (process-environment captured-process-environment)
+                     (overleaf-project--async-current-task-id task-id))
+                 (unwind-protect
+                     (condition-case err
+                         (let ((value (funcall function)))
+                           (unless (overleaf-project--async-current-task-canceled-p)
+                             (overleaf-project--async-push-completion
+                              (make-overleaf-project--async-completion
+                               :task-id task-id
+                               :name name
+                               :key key
+                               :status 'success
+                               :value value
+                               :on-success on-success
+                               :on-error on-error
+                               :default-directory captured-default-directory
+                               :overleaf-project-url captured-overleaf-project-url
+                               :log-context captured-log-context))))
+                       (quit nil)
+                       (error
+                        (unless (overleaf-project--async-current-task-canceled-p)
+                          (overleaf-project--async-push-completion
+                           (make-overleaf-project--async-completion
+                            :task-id task-id
+                            :name name
+                            :key key
+                            :status 'error
+                            :error (error-message-string err)
+                            :on-success on-success
+                            :on-error on-error
+                            :default-directory captured-default-directory
+                            :overleaf-project-url captured-overleaf-project-url
+                            :log-context captured-log-context)))))
+                   (when (overleaf-project--async-current-task-canceled-p)
+                     (remhash task-id overleaf-project--async-canceled-task-ids)
+                     (overleaf-project--async-remove-task task-id)))))
+             name))
+      task)))
 
 ;;;; Cookie helpers
 
@@ -883,6 +1041,7 @@ DIRECTORY, ENV, and NOERROR have the same meaning as in
                             (setq status (process-exit-status proc))
                             (setq done t))
                         (mutex-unlock mutex))))))
+           (overleaf-project--async-register-process process)
            (while (not done)
              (accept-process-output process 0.05)
              (thread-yield))
@@ -900,13 +1059,17 @@ DIRECTORY, ENV, and NOERROR have the same meaning as in
               output
               noerror))))
       (when (and process (process-live-p process))
-        (ignore-errors (delete-process process))))
+        (ignore-errors (delete-process process)))
+      (when process
+        (overleaf-project--async-unregister-process process)))
     result))
 
 (defun overleaf-project--run (program args &optional directory env noerror)
   "Run PROGRAM with ARGS in DIRECTORY and optional ENV.
 Return an `overleaf-project--command-result'.  Signal an error unless
 NOERROR is non-nil."
+  (when (overleaf-project--async-current-task-canceled-p)
+    (signal 'quit (list "Overleaf background operation was canceled")))
   (let ((program (overleaf-project--ensure-executable program)))
     (if (and (overleaf-project--background-thread-p)
              (fboundp 'make-mutex))

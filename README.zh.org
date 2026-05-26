@@ -165,6 +165,16 @@ M-x overleaf-project-init
 ~overleaf-project-pull~ 要求工作树干净，并把最新的 Overleaf 快照合并到当前
 分支。
 
+交互调用时，这些命令会在前台收集 minibuffer 输入和确认，然后默认把网络、
+解压和 Git 等耗时工作放到后台 Emacs 线程执行。这样 clone、init、push、
+pull、远端覆盖、认证以及 Magit 远端刷新在等待 Overleaf 或外部工具时不会
+阻塞 Emacs。若需要旧的完全同步行为，可以把
+~overleaf-project-async-commands~ 设为 ~nil~。
+
+运行 ~M-x overleaf-project-force-stop~ 可以取消当前所有已跟踪的 Overleaf
+后台任务。它会尽量中断这些任务启动的外部进程，清理 async 锁，并丢弃尚未
+执行的前台回调。取消是尽力而为：已经在本地或远端完成的改动不会自动回滚。
+
 这两个命令都必须在普通分支上运行，不能在 detached ~HEAD~ 状态下执行。
 
 ** 推送到 Overleaf
@@ -274,6 +284,7 @@ push：
 - ~overleaf-project-push-force~
 - ~overleaf-project-pull~
 - ~overleaf-project-browse-remote~
+- ~overleaf-project-force-stop~
 - ~overleaf-project-log~
 - ~overleaf-project-log-clear~
 
@@ -288,6 +299,7 @@ push：
 - =a= -> ~overleaf-project-authenticate~
 - =b= -> ~overleaf-project-browse-remote~
 - =c= -> ~overleaf-project-clone~
+- =k= -> ~overleaf-project-force-stop~
 - =l= -> ~overleaf-project-pull~
 - =p= -> ~overleaf-project-push~
 - =s= -> ~overleaf-project-push~（兼容快捷键）
@@ -303,6 +315,8 @@ push：
 - ~overleaf-project-log-echo~：是否同时在 minibuffer 显示日志条目
 - ~overleaf-project-log-time-format~：日志时间戳格式
 - ~overleaf-project-sync-auto-commit-message~：push 前自动本地提交时使用的消息
+- ~overleaf-project-async-commands~：交互命令和 push hook 是否在后台执行网络、
+  解压和 Git 工作，以免阻塞 Emacs
 - ~overleaf-project-socket-timeout~：websocket 获取项目树时的超时时间
 - ~overleaf-project-curl-connect-timeout~ 和 ~overleaf-project-curl-max-time~：限制
   Overleaf HTTP 请求中同步 curl 调用最多阻塞多久
