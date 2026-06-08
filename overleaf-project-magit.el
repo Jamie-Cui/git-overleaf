@@ -46,6 +46,9 @@ a remote refresh."
 (defvar-local overleaf-project-magit--remote-commit nil
   "SHA of the remote snapshot commit after `overleaf-project-magit-refresh-remote'.")
 
+(defvar-local overleaf-project-magit--remote-base-rev nil
+  "Base revision used to create `overleaf-project-magit--remote-commit'.")
+
 (defvar-local overleaf-project-magit--refreshing nil
   "Non-nil while a remote refresh is in progress.")
 
@@ -57,17 +60,53 @@ a remote refresh."
 
 ;;;; Helpers
 
-(defun overleaf-project-magit--state-label (repo in-sync)
+(defun overleaf-project-magit--state-label
+    (repo local-in-sync remote-known remote-in-sync local-matches-remote)
   "Return (LABEL . FACE) describing the sync state of REPO.
-IN-SYNC is non-nil when the base tree matches HEAD."
+LOCAL-IN-SYNC is non-nil when the base tree matches HEAD.
+REMOTE-KNOWN is non-nil when a fresh remote snapshot is available.
+REMOTE-IN-SYNC is non-nil when that remote snapshot matches the base tree.
+LOCAL-MATCHES-REMOTE is non-nil when HEAD matches the remote snapshot."
   (let ((pending (overleaf-project--pending-state repo)))
     (cond
      (pending
       (let ((action (plist-get pending :action))
-            (branch (plist-get pending :sync-branch)))
-        (cons (format "pending %s on %s" action branch) 'error)))
-     (in-sync (cons "in sync" 'magit-dimmed))
-     (t       (cons "local changes" 'warning)))))
+            (branch (or (plist-get pending :sync-branch)
+                        (ignore-errors
+                          (overleaf-project--current-branch repo)))))
+        (cons (if branch
+                  (format "pending %s on %s" action branch)
+                (format "pending %s" action))
+              'error)))
+     ((and local-in-sync (or (not remote-known) remote-in-sync))
+      (cons "in sync" 'magit-dimmed))
+     ((and remote-known local-in-sync)
+      (cons "remote changes" 'warning))
+     ((and remote-known local-matches-remote)
+      (cons "local matches remote" 'warning))
+     ((and remote-known remote-in-sync)
+      (cons "local changes" 'warning))
+     (remote-known
+      (cons "local and remote changes" 'warning))
+     (t
+      (cons "local changes" 'warning)))))
+
+(defun overleaf-project-magit--fresh-remote-commit (base-rev)
+  "Return the remote snapshot commit when it was created from BASE-REV.
+Clear the buffer-local remote snapshot when it belongs to an older base."
+  (when (and overleaf-project-magit--remote-commit
+             (not (equal overleaf-project-magit--remote-base-rev base-rev)))
+    (setq overleaf-project-magit--remote-commit nil)
+    (setq overleaf-project-magit--remote-base-rev nil)
+    (setq overleaf-project-magit--last-remote-refresh-time nil))
+  overleaf-project-magit--remote-commit)
+
+(defun overleaf-project-magit--status-buffer-for-repo (repo)
+  "Return the `magit-status-mode' buffer for REPO, creating one if needed."
+  (let ((default-directory repo))
+    (or (magit-get-mode-buffer 'magit-status-mode)
+        (let ((overleaf-project-magit-auto-refresh-remote nil))
+          (magit-status-setup-buffer repo)))))
 
 ;;;; Section insertion
 
@@ -78,9 +117,24 @@ IN-SYNC is non-nil when the base tree matches HEAD."
               (base-ref (overleaf-project--base-ref repo))
               (base-rev (overleaf-project--rev-parse-noerror repo base-ref)))
     (let* ((name (overleaf-project--project-name repo))
-           (in-sync (equal (overleaf-project--tree-id repo base-ref)
-                           (overleaf-project--tree-id repo "HEAD")))
-           (state (overleaf-project-magit--state-label repo in-sync))
+           (base-tree (overleaf-project--tree-id repo base-ref))
+           (head-tree (overleaf-project--tree-id repo "HEAD"))
+           (remote-commit
+            (overleaf-project-magit--fresh-remote-commit base-rev))
+           (remote-tree
+            (and remote-commit
+                 (overleaf-project--tree-id repo remote-commit)))
+           (local-in-sync (equal base-tree head-tree))
+           (remote-known (not (null remote-tree)))
+           (remote-in-sync (and remote-known (equal base-tree remote-tree)))
+           (local-matches-remote
+            (and remote-known (equal head-tree remote-tree)))
+           (state (overleaf-project-magit--state-label
+                   repo
+                   local-in-sync
+                   remote-known
+                   remote-in-sync
+                   local-matches-remote))
            (label (car state))
            (face (cdr state)))
       (magit-insert-section (overleaf)
@@ -92,7 +146,7 @@ IN-SYNC is non-nil when the base tree matches HEAD."
 					 (propertize ", refreshing..." 'font-lock-face 'magit-dimmed)
 				       "")))
 			    ;; Local changes diff (base..HEAD), collapsed by default
-			    (unless in-sync
+			    (unless local-in-sync
 			      (magit-insert-section (overleaf-local nil t)
 						    (magit-insert-heading "Local changes (base..HEAD):")
 						    (magit-insert-section-body
@@ -100,13 +154,13 @@ IN-SYNC is non-nil when the base tree matches HEAD."
 						       (magit--insert-diff nil
 									   "diff" base-rev "HEAD" "--no-prefix")))))
 			    ;; Remote changes (shown after r refresh)
-			    (when overleaf-project-magit--remote-commit
+			    (when (and remote-commit (not remote-in-sync))
 			      (magit-insert-section (overleaf-remote nil t)
 						    (magit-insert-heading "Remote changes (base..remote):")
 						    (magit-insert-section-body
 						     (let ((default-directory repo))
 						       (magit--insert-diff nil
-									   "diff" base-rev overleaf-project-magit--remote-commit
+									   "diff" base-rev remote-commit
 									   "--no-prefix")))))))))
 
 ;;;; Remote refresh
@@ -138,13 +192,16 @@ IN-SYNC is non-nil when the base tree matches HEAD."
 	    (error-message-string err)))))))))
 
 (defun overleaf-project-magit--finish-remote-refresh
-    (magit-buf remote-commit &optional message)
+    (magit-buf remote-commit base-rev &optional message)
   "Update MAGIT-BUF after a remote refresh.
 REMOTE-COMMIT is the downloaded snapshot commit, or nil on failure.
+BASE-REV is the base revision used to create REMOTE-COMMIT.
 MESSAGE is displayed before refreshing the Magit buffer when non-nil."
   (when (buffer-live-p magit-buf)
     (with-current-buffer magit-buf
       (setq overleaf-project-magit--remote-commit remote-commit)
+      (setq overleaf-project-magit--remote-base-rev
+            (and remote-commit base-rev))
       (setq overleaf-project-magit--refreshing nil)
       (setq overleaf-project-magit--suppress-next-auto-refresh t)
       (when message
@@ -168,41 +225,55 @@ heavy work in the background."
                    (user-error "Not inside a Git repository")))
          (_ (unless (overleaf-project--managed-repo-p repo)
               (user-error "Not an Overleaf project")))
-         (magit-buf (current-buffer)))
-    (when overleaf-project-magit--refreshing
-      (user-error "Remote refresh already in progress"))
+         (magit-buf (overleaf-project-magit--status-buffer-for-repo repo)))
+    (with-current-buffer magit-buf
+      (when overleaf-project-magit--refreshing
+        (user-error "Remote refresh already in progress")))
     (overleaf-project--set-repo-url repo)
     (let* ((base-ref (overleaf-project--base-ref repo))
            (base-rev (or (overleaf-project--rev-parse-noerror repo base-ref)
                          (user-error "Base ref %s does not exist" base-ref)))
-           (project-id (overleaf-project--project-id repo)))
+           (project-id (overleaf-project--project-id repo))
+           (previous-last-refresh-time
+            (with-current-buffer magit-buf
+              overleaf-project-magit--last-remote-refresh-time)))
       (overleaf-project--with-repo-log-context repo
-					       (setq overleaf-project-magit--refreshing t)
-					       (setq overleaf-project-magit--last-remote-refresh-time (float-time))
-					       (overleaf-project--async-start
-						"Overleaf Magit remote refresh"
-						(lambda ()
-						  (overleaf-project--set-repo-url repo)
-						  (overleaf-project--with-downloaded-snapshot
-						   project-id
-						   (lambda (root)
-						     (overleaf-project--commit-directory
-						      repo
-						      root
-						      base-rev
-						      "overleaf remote snapshot"))))
-						:key (format "magit-remote:%s"
-							     (directory-file-name (expand-file-name repo)))
-						:on-success
-						(lambda (commit)
-						  (overleaf-project-magit--finish-remote-refresh
-						   magit-buf
-						   commit
-						   "Remote snapshot ready."))
-						:on-error
-						(lambda (message)
-						  (overleaf-project-magit--finish-remote-refresh magit-buf nil)
-						  (overleaf-project--warn "Overleaf remote refresh failed: %s" message)))))))
+        (with-current-buffer magit-buf
+          (setq overleaf-project-magit--refreshing t)
+          (setq overleaf-project-magit--last-remote-refresh-time (float-time)))
+        (condition-case err
+            (overleaf-project--async-start
+             "Overleaf Magit remote refresh"
+             (lambda ()
+               (overleaf-project--set-repo-url repo)
+               (overleaf-project--with-downloaded-snapshot
+                project-id
+                (lambda (root)
+                  (overleaf-project--commit-directory
+                   repo
+                   root
+                   base-rev
+                   "overleaf remote snapshot"))))
+             :key (format "magit-remote:%s"
+                          (directory-file-name (expand-file-name repo)))
+             :on-success
+             (lambda (commit)
+               (overleaf-project-magit--finish-remote-refresh
+                magit-buf
+                commit
+                base-rev
+                "Remote snapshot ready."))
+             :on-error
+             (lambda (message)
+               (overleaf-project-magit--finish-remote-refresh
+                magit-buf nil nil)
+               (overleaf-project--warn "Overleaf remote refresh failed: %s" message)))
+          (error
+           (with-current-buffer magit-buf
+             (setq overleaf-project-magit--refreshing nil)
+             (setq overleaf-project-magit--last-remote-refresh-time
+                   previous-last-refresh-time))
+           (signal (car err) (cdr err))))))))
 
 ;;;; Setup
 
