@@ -7,7 +7,8 @@ English README: [[file:README.org][README.org]]
 与原项目的主要区别：~overleaf.el~ 提供单 buffer 实时编辑工作流，每次保存
 都会实时同步单个文件。~overleaf-project~ 则将整个 Overleaf 项目视为一个
 Git 仓库——你按自己的节奏在本地提交，再整体推送/拉取快照，冲突处理和历史
-管理因此更加可控。
+管理因此更加可控。推送到已有 Overleaf 文本文档时，它会通过 Overleaf 的
+实时文本 OT 通道更新该文档，从而保留远端文档 id 和 Web 端历史记录。
 
 ~overleaf-project~ 为 Emacs 提供基于项目级别的 Overleaf 集成：
 
@@ -126,7 +127,7 @@ M-x overleaf-project-authenticate
 #+end_example
 
 如果 ~overleaf-project-clone~、~overleaf-project-init~、
-~overleaf-project-push~、~overleaf-project-push-force~ 或
+~overleaf-project-push~、~overleaf-project-overwrite-remote~ 或
 ~overleaf-project-pull~ 启动时没有有效 cookies，命令会先在
 minibuffer 中询问你是否立即运行 ~overleaf-project-authenticate~。对于
 ~overleaf-project-authenticate~ 保存下来的 cookies，过期判断会先基于本地
@@ -179,8 +180,7 @@ M-x overleaf-project-init
 
 - 如果存在已暂存改动，它会自动提交
 - 如果存在未暂存或未跟踪文件，它会询问你是否先暂存全部改动
-- 然后它会拉取最新的 Overleaf 快照，并在双方都发生变化时选择直接上传
-  ~HEAD~ 或创建合并分支
+- 然后它会拉取最新的 Overleaf 快照，并且只在远端未分叉时上传 ~HEAD~
 
 ~overleaf-project-pull~ 要求工作树干净，并把最新的 Overleaf 快照合并到当前
 分支。
@@ -215,19 +215,29 @@ M-x overleaf-project-push
 - 如果只有本地发生变化，就把 ~HEAD~ 上传到 Overleaf
 - 如果远端内容已经与 ~HEAD~ 一致，只更新基线 ref
 - 如果只有远端发生变化，会停止并提示你先运行 ~overleaf-project-pull~
-- 如果两边都发生了不同的变化，会创建新的合并分支，执行 =git merge=，并在冲突解决后推送合并结果
+- 如果两边都发生了不同的变化，会停止并提示你先运行
+  ~overleaf-project-pull~
 
-** 强制推送到 Overleaf
+对于远端已有的 Overleaf ~doc~ 条目，发生变化的 UTF-8 文本会通过 Overleaf
+的实时 ShareJS 文本 OT 路径更新。这样会保留远端文档 id，并在 Overleaf
+Web 端生成正常的文本编辑历史。发生变化的二进制/file 条目、新增文件、类型
+冲突和删除条目仍然使用 Overleaf 的上传/删除 API。如果某个远端 doc 无法
+通过当前支持的文本 OT 更新，例如它不是合法 UTF-8、使用 Overleaf 较新的
+~history-ot~ 类型，或在下载快照后又被远端编辑，push 会失败，而不会静默
+删除并重建该 doc。
+
+** 覆盖 Overleaf 远端
 
 执行：
 
 #+begin_example
-M-x overleaf-project-push-force
+M-x overleaf-project-overwrite-remote
 #+end_example
 
 这个命令会沿用 ~overleaf-project-push~ 的本地自动提交准备逻辑，
-但总是用本地 ~HEAD~ 快照覆盖远端 Overleaf 项目内容。只有在你明确
-希望本地文件覆盖远端状态时才应使用它。
+但总是用本地 ~HEAD~ 快照覆盖远端 Overleaf 项目内容。已有远端 doc 在支持
+时仍会通过文本 OT 更新；非 doc 文件和类型冲突会通过 Overleaf 上传/删除
+API 替换。只有在你明确希望本地文件覆盖远端状态时才应使用它。
 
 ** 从 Overleaf 拉取
 
@@ -303,7 +313,7 @@ snapshot 的远端 diff。
 - ~overleaf-project-clone~
 - ~overleaf-project-init~
 - ~overleaf-project-push~
-- ~overleaf-project-push-force~
+- ~overleaf-project-overwrite-remote~
 - ~overleaf-project-pull~
 - ~overleaf-project-browse-remote~
 - ~overleaf-project-force-stop~
@@ -352,8 +362,12 @@ snapshot 的远端 diff。
 - Overleaf 的信息、警告和 debug 日志都会写入全局
   ~*overleaf-project-log*~ buffer。每条日志都带有时间、级别，以及当前可识别
   的项目、仓库或 Overleaf URL 上下文，方便区分不同项目的日志。
-- 当前 push 会重建发生变化的远端文件，而不会保留原来的 Overleaf 文档 id。
-  对于新的项目级工作流，这是可以接受的，但与旧的实时 buffer 集成方式不同。
-- ~overleaf-project-push-force~ 会用本地 ~HEAD~ 快照覆盖远端 Overleaf 文件。
+- Push 会通过实时 ShareJS 文本 OT 路径保留已有 Overleaf 文本文档 id。
+  非 doc 文件内容变化时仍会被替换。
+- ~overleaf-project-overwrite-remote~ 会用本地 ~HEAD~ 覆盖远端项目；在同一
+  文本 OT 路径支持时，它仍会保留已有文本文档 id。
+- ~.overleaf-project-sync.json~ 是启用 metadata 时保留的远端同步元数据文件。
+  如果它已经是 Overleaf 文本 doc，push 会通过同一个 OT 路径修改它，而不是
+  删除后重建。
 - 空目录不会被 Git 跟踪，因此在 push/pull 时也不会被保留。
 - 将 ~overleaf-project-debug~ 设为 ~t~ 可以开启详细 debug 日志。

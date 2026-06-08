@@ -376,6 +376,10 @@ the merge is complete and uploads the merged result.  If the remote has
 diverged and no pending pull exists, signals an error asking you to run
 `overleaf-project-pull' first.
 
+Existing remote Overleaf text docs are updated through Overleaf's
+real-time text OT path when possible, preserving document ids and web
+history.  Non-doc files still use Overleaf upload/delete APIs.
+
 When NOERROR is non-nil, silently return nil if DIRECTORY is not a
 managed Overleaf repo, and demote push errors to warnings.  This is
 useful for hooks such as `git-commit-post-finish-hook'."
@@ -441,7 +445,9 @@ non-nil, assume the caller already checked authentication."
   "Overwrite the configured Overleaf project with the current Git repo.
 Like `overleaf-project-push', staged changes are committed automatically
 before upload.  Unlike `overleaf-project-push', remote Overleaf changes
-are replaced by the local `HEAD' snapshot."
+are replaced by the local `HEAD' snapshot.  Existing remote Overleaf
+text docs are updated through text OT when possible, preserving document
+ids and web history."
   (interactive)
   (let* ((repo (overleaf-project--require-managed-repo directory)))
     (if (and (called-interactively-p 'interactive)

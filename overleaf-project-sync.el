@@ -54,6 +54,16 @@
         (error-message-string err))
        nil))))
 
+(defun overleaf-project--read-sync-metadata-file-text (file)
+  "Read sync metadata FILE as UTF-8 text for in-place remote updates."
+  (condition-case err
+      (overleaf-project--file-utf8-string file)
+    (error
+     (overleaf-project--warn
+      "Could not preserve existing Overleaf sync metadata for OT update: %s"
+      (error-message-string err))
+     nil)))
+
 (defun overleaf-project--extract-remote-sync-metadata (root)
   "Read and remove the remote sync metadata file from ROOT.
 The file is removed so downloaded snapshots compare only user project
@@ -62,6 +72,8 @@ content."
     (let ((file (overleaf-project--sync-metadata-file-in-root root)))
       (cond
        ((file-regular-p file)
+        (setq overleaf-project--remote-sync-metadata-text
+              (overleaf-project--read-sync-metadata-file-text file))
         (prog1 (overleaf-project--read-sync-metadata-file file)
           (delete-file file)))
        ((file-exists-p file)
@@ -168,9 +180,11 @@ content."
      (unwind-protect
          (progn
            (setq snapshot (overleaf-project--download-snapshot project-id))
-           (let ((overleaf-project--remote-sync-metadata
-                  (overleaf-project--extract-remote-sync-metadata
-                   (overleaf-project--snapshot-root snapshot))))
+           (let ((overleaf-project--remote-sync-metadata nil)
+                 (overleaf-project--remote-sync-metadata-text nil))
+             (setq overleaf-project--remote-sync-metadata
+                   (overleaf-project--extract-remote-sync-metadata
+                    (overleaf-project--snapshot-root snapshot)))
              (funcall function (overleaf-project--snapshot-root snapshot))))
        (when snapshot
          (ignore-errors
@@ -393,30 +407,37 @@ changes without prompting, and `error' signals a user error."
                    (not (eq (overleaf-project--entity-type remote-entry) 'folder))
                    (overleaf-project--files-equal-p local-file remote-file))))
         (unless same-content
-          (when remote-entry
-            (overleaf-project--delete-entity project-id remote-entry)
-            (overleaf-project--forget-entry remote-table path))
-          (let* ((parent-path (overleaf-project--parent-path path))
-                 (parent-entry (gethash parent-path remote-table))
-                 (response
-                  (overleaf-project--curl-upload-file
-                   project-id
-                   (overleaf-project--entity-id parent-entry)
-                   (file-name-nondirectory path)
-                   local-file))
-                 (entity-type
-                  (pcase (plist-get response :entity_type)
-                    ("doc" 'doc)
-                    (_ 'file))))
-            (puthash
-             path
-             (make-overleaf-project--entity
-              :path path
-              :name (file-name-nondirectory path)
-              :id (plist-get response :entity_id)
-              :type entity-type
-              :parent-id (overleaf-project--entity-id parent-entry))
-             remote-table)))))
+          (if (and remote-entry
+                   (eq (overleaf-project--entity-type remote-entry) 'doc))
+              (overleaf-project--update-doc-text
+               project-id
+               (overleaf-project--entity-id remote-entry)
+               local-file
+               remote-file)
+            (when remote-entry
+              (overleaf-project--delete-entity project-id remote-entry)
+              (overleaf-project--forget-entry remote-table path))
+            (let* ((parent-path (overleaf-project--parent-path path))
+                   (parent-entry (gethash parent-path remote-table))
+                   (response
+                    (overleaf-project--curl-upload-file
+                     project-id
+                     (overleaf-project--entity-id parent-entry)
+                     (file-name-nondirectory path)
+                     local-file))
+                   (entity-type
+                    (pcase (plist-get response :entity_type)
+                      ("doc" 'doc)
+                      (_ 'file))))
+              (puthash
+               path
+               (make-overleaf-project--entity
+                :path path
+                :name (file-name-nondirectory path)
+                :id (plist-get response :entity_id)
+                :type entity-type
+                :parent-id (overleaf-project--entity-id parent-entry))
+               remote-table))))))
 
     (maphash
      (lambda (path entity)
@@ -449,23 +470,39 @@ changes without prompting, and `error' signals a user error."
 
 (defun overleaf-project--upload-sync-metadata
     (repo revision project-id remote-table)
-  "Upload sync metadata for REVISION in REPO to PROJECT-ID."
+  "Update sync metadata for REVISION in REPO on PROJECT-ID."
   (when overleaf-project-sync-metadata-enabled
     (condition-case err
         (let* ((path (overleaf-project--sync-metadata-relative-path))
                (root-entry (gethash "" remote-table))
-	       (temp-file (make-temp-file "overleaf-project-sync-metadata." nil ".json")))
+               (existing (gethash path remote-table))
+               (metadata-text
+                (overleaf-project--sync-metadata-json repo revision project-id))
+	       (temp-file nil))
           (unless root-entry
             (user-error "Could not find remote Overleaf root folder"))
           (unwind-protect
-              (progn
+              (if (and existing
+                       (eq (overleaf-project--entity-type existing) 'doc))
+                  (if overleaf-project--remote-sync-metadata-text
+                      (progn
+                        (overleaf-project--update-doc-text-content
+                         project-id
+                         (overleaf-project--entity-id existing)
+                         overleaf-project--remote-sync-metadata-text
+                         metadata-text)
+                        (setq overleaf-project--remote-sync-metadata-text
+                              metadata-text))
+                    (overleaf-project--warn
+                     "Could not update remote Overleaf sync metadata through text OT because the downloaded metadata text was unavailable"))
+                (setq temp-file
+                      (make-temp-file
+                       "overleaf-project-sync-metadata."
+                       nil
+                       ".json"))
                 (with-temp-file temp-file
-                  (insert
-                   (overleaf-project--sync-metadata-json
-                    repo
-                    revision
-                    project-id)))
-                (when-let ((existing (gethash path remote-table)))
+                  (insert metadata-text))
+                (when existing
                   (overleaf-project--delete-entity project-id existing)
                   (overleaf-project--forget-entry remote-table path))
                 (let* ((response

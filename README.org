@@ -12,7 +12,10 @@ single-buffer live editing workflow where each save syncs one file in
 real time.  ~overleaf-project~ instead treats the whole Overleaf
 project as a Git repository — you commit locally at your own pace and
 push/pull entire snapshots, which makes conflict resolution and history
-management much more tractable.
+management much more tractable.  When pushing changes to an existing
+Overleaf text document, it updates that document through Overleaf's
+real-time text OT channel so the document id and web history are
+preserved.
 
 ~overleaf-project~ provides project-level Overleaf integration for Emacs:
 
@@ -244,6 +247,16 @@ Then it behaves as follows:
 - if both changed differently, it stops and asks you to run
   ~overleaf-project-pull~ first
 
+For existing remote Overleaf ~doc~ entries, changed UTF-8 text is updated
+through Overleaf's real-time ShareJS text OT path.  That preserves the
+remote document id and produces normal Overleaf web history entries.
+Changed binary/file entries, newly added files, type conflicts, and
+deleted entries still use Overleaf's file upload/delete APIs.  If a
+remote doc cannot be updated through supported text OT, for example
+because it is not valid UTF-8, uses Overleaf's newer ~history-ot~ type,
+or changes again after the snapshot is downloaded, the push fails instead
+of silently deleting and recreating that doc.
+
 ** Overwrite the Overleaf remote
 
 Run:
@@ -254,9 +267,11 @@ M-x overleaf-project-overwrite-remote
 
 This command uses the same local auto-commit preparation as
 ~overleaf-project-push~, but always replaces the remote Overleaf project
-contents with the local ~HEAD~ snapshot.  Use it only as a recovery
-command when you intentionally want local files to replace the remote
-state.
+contents with the local ~HEAD~ snapshot.  Existing remote docs are still
+updated through text OT when possible; non-doc files and type conflicts
+are replaced through Overleaf upload/delete APIs.  Use it only as a
+recovery command when you intentionally want local files to replace the
+remote state.
 
 ** Pull from Overleaf
 
@@ -405,14 +420,16 @@ Useful options include:
   global ~*overleaf-project-log*~ buffer.  Each entry includes timestamp,
   level, and the best available project, repository, or Overleaf URL
   context so logs from different projects can be distinguished.
-- Push currently recreates changed remote files instead of preserving old
-  Overleaf document ids.  That is acceptable for the new project-level
-  workflow, but it is different from the old live buffer integration.
-- ~overleaf-project-overwrite-remote~ overwrites remote Overleaf files
-  with the local ~HEAD~ snapshot.
+- Push preserves existing Overleaf text doc ids by using the real-time
+  ShareJS text OT path.  Non-doc files are still replaced when their
+  contents change.
+- ~overleaf-project-overwrite-remote~ overwrites the remote project with
+  local ~HEAD~, while preserving existing text doc ids when supported by
+  the same OT path.
 - ~.overleaf-project-sync.json~ is reserved for remote sync metadata when
   metadata support is enabled.  It should not be tracked in the local Git
-  repository.
+  repository.  When it already exists as an Overleaf text doc, push
+  updates it through the same OT path instead of recreating it.
 - Local safety refs can be inspected with:
 
   #+begin_example

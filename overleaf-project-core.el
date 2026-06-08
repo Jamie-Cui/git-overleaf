@@ -196,6 +196,9 @@ this variable directly only when you want custom persistence logic.")
 (defvar overleaf-project--remote-sync-metadata nil
   "Sync metadata extracted from the currently downloaded remote snapshot.")
 
+(defvar overleaf-project--remote-sync-metadata-text nil
+  "Raw sync metadata text extracted from the current remote snapshot.")
+
 (cl-defstruct overleaf-project--command-result
   "Result of an external command."
   status
