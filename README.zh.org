@@ -13,6 +13,9 @@ Overleaf 之间同步完整项目快照。
 本包面向希望使用本地 LaTeX 编辑、普通 Git 提交和 Git 冲突处理，同时仍需
 与使用 Overleaf Web 编辑器的协作者保持同步的用户。
 
+~overleaf-project~ 明确受 [[https://github.com/vale981/overleaf.el][overleaf.el]] 项目启发，并在这一思路上采用项目级
+Git 快照工作流。
+
 * 功能
 
 - 将完整 Overleaf 项目克隆为本地 Git 仓库。

@@ -18,6 +18,10 @@ This package is designed for users who prefer local LaTeX editing,
 ordinary Git commits, and Git-based conflict resolution while still
 collaborating with people who use the Overleaf web editor.
 
+~overleaf-project~ is explicitly inspired by
+[[https://github.com/vale981/overleaf.el][overleaf.el]] and builds on that
+idea with a project-wide Git snapshot workflow.
+
 * Features
 
 - Clone a complete Overleaf project into a local Git repository.
