@@ -10,6 +10,7 @@ devenv.local.nix
 
 overleaf
 *.elc
+*-autoloads.el
 node_modules
 
 __pycache__

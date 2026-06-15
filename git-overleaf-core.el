@@ -2,6 +2,7 @@
 
 ;; Copyright (C) 2020-2026 Jamie Cui
 ;; Author: Jamie Cui <jamie.cui@outlook.com>
+;; URL: https://github.com/Jamie-Cui/git-overleaf
 ;; Assisted-by: Codex:GPT-5.5
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 ;; This file is not part of GNU Emacs.
