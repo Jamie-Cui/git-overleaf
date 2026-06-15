@@ -24,3 +24,4 @@ coverage
 .worktrees
 /docs/superpowers/plans/*.md
 /.agent-shell/
+/.qoder/
