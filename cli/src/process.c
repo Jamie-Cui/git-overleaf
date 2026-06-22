@@ -29,12 +29,13 @@ static char *format_command(char *const argv[]) {
   return text;
 }
 
-int go_process_run(char *const argv[], const char *cwd, char *const env[],
-                   int allow_failure, GoProcessResult *out, GoError *err) {
+int git_overleaf_process_run(char *const argv[], const char *cwd,
+                             char *const env[], int allow_failure,
+                             GoProcessResult *out, GoError *err) {
   memset(out, 0, sizeof(*out));
   int pipefd[2];
   if (pipe(pipefd) != 0) {
-    return go_error(err, "pipe failed: %s", strerror(errno));
+    return git_overleaf_error(err, "pipe failed: %s", strerror(errno));
   }
 
   pid_t pid = fork();
@@ -42,7 +43,7 @@ int go_process_run(char *const argv[], const char *cwd, char *const env[],
     int saved = errno;
     close(pipefd[0]);
     close(pipefd[1]);
-    return go_error(err, "fork failed: %s", strerror(saved));
+    return git_overleaf_error(err, "fork failed: %s", strerror(saved));
   }
 
   if (pid == 0) {
@@ -58,7 +59,7 @@ int go_process_run(char *const argv[], const char *cwd, char *const env[],
         char *eq = strchr(env[i], '=');
         if (eq) {
           size_t name_len = (size_t)(eq - env[i]);
-          char *name = go_xstrndup(env[i], name_len);
+          char *name = git_overleaf_xstrndup(env[i], name_len);
           if (!name) {
             _exit(127);
           }
@@ -82,7 +83,8 @@ int go_process_run(char *const argv[], const char *cwd, char *const env[],
       }
       int saved = errno;
       close(pipefd[0]);
-      return go_error(err, "read from child failed: %s", strerror(saved));
+      return git_overleaf_error(err, "read from child failed: %s",
+                                strerror(saved));
     }
     if (n == 0) {
       break;
@@ -91,7 +93,7 @@ int go_process_run(char *const argv[], const char *cwd, char *const env[],
     if (!next) {
       close(pipefd[0]);
       free(buffer.data);
-      return go_error(err, "out of memory");
+      return git_overleaf_error(err, "out of memory");
     }
     buffer.data = next;
     memcpy(buffer.data + buffer.len, chunk, (size_t)n);
@@ -104,7 +106,7 @@ int go_process_run(char *const argv[], const char *cwd, char *const env[],
   while (waitpid(pid, &status, 0) < 0) {
     if (errno != EINTR) {
       free(buffer.data);
-      return go_error(err, "waitpid failed: %s", strerror(errno));
+      return git_overleaf_error(err, "waitpid failed: %s", strerror(errno));
     }
   }
 
@@ -116,28 +118,28 @@ int go_process_run(char *const argv[], const char *cwd, char *const env[],
   }
 
   if (!buffer.data) {
-    buffer.data = go_xstrdup("");
+    buffer.data = git_overleaf_xstrdup("");
   }
-  char *trimmed = go_trimmed_dup(buffer.data ? buffer.data : "");
+  char *trimmed = git_overleaf_trimmed_dup(buffer.data ? buffer.data : "");
   free(buffer.data);
   if (!trimmed) {
-    return go_error(err, "out of memory");
+    return git_overleaf_error(err, "out of memory");
   }
 
   out->status = exit_status;
   out->output = trimmed;
   if (!allow_failure && exit_status != 0) {
     char *command = format_command(argv);
-    go_error(err, "%s failed with status %d: %s", command ? command : argv[0],
-             exit_status,
-             out->output && *out->output ? out->output : "no output");
+    git_overleaf_error(err, "%s failed with status %d: %s",
+                       command ? command : argv[0], exit_status,
+                       out->output && *out->output ? out->output : "no output");
     free(command);
     return -1;
   }
   return 0;
 }
 
-void go_process_result_free(GoProcessResult *result) {
+void git_overleaf_process_result_free(GoProcessResult *result) {
   if (result) {
     free(result->output);
     result->output = NULL;
